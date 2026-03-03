@@ -602,7 +602,7 @@ export default function App() {
   const [prevDetails, setPrevDetails] = useState(null);
 
   // StrictMode fix (prevent double useEffect verify)
-  const hasVerifiedFromQR = useRef(false);
+const [hasVerifiedFromQR, setHasVerifiedFromQR] = useState(false);
 
   /* ===================== FORM STATES ===================== */
   const [serial, setSerial] = useState("");
@@ -768,25 +768,28 @@ export default function App() {
   // }, [queryData]);
 
 
- useEffect(() => {
-  if (hasVerifiedFromQR.current) return;
+useEffect(() => {
+  if (hasVerifiedFromQR) return;
 
   if (!queryData.token) {
     setStatus("idle");
     return;
   }
 
-  hasVerifiedFromQR.current = true;
-
   const product = PRODUCT_DATABASE.find((p) => p.token === queryData.token);
 
   if (!product) {
     setStatus("fail");
+    setHasVerifiedFromQR(true);
     return;
   }
 
   verifyProduct(product);
-}, [queryData]);
+
+  // ✅ lock AFTER execution
+  setHasVerifiedFromQR(true);
+
+}, [queryData.token, hasVerifiedFromQR]);
 
 
 
@@ -797,7 +800,7 @@ export default function App() {
     setPrevDetails(null);
 
     // allow scanning again
-    hasVerifiedFromQR.current = false;
+    setHasVerifiedFromQR(false);
 
     // remove query params
     window.history.replaceState({}, document.title, "/");
