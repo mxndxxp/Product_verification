@@ -1804,7 +1804,7 @@
 //     </div>
 //   );
 // }
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QRCodeCanvas } from "qrcode.react";
 
 import Android from "./assets/download-removebg-preview (1).png";
@@ -1840,15 +1840,13 @@ const PRODUCTS_FOR_QR = [
 ];
 
 /* =====================================================================
-   ADMIN QR PAGE — its own component, no hooks issue
+   ADMIN QR PAGE
    Access: http://localhost:5173/?admin=true
 ===================================================================== */
 function AdminQRPage() {
   return (
     <div className="min-h-screen bg-gray-100 p-6">
       <div className="max-w-5xl mx-auto">
-
-        {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-gray-800">
             Alpha-Pharma — QR Code Generator
@@ -1860,28 +1858,16 @@ function AdminQRPage() {
             🖨️ Print All QR Codes
           </button>
         </div>
-
         <p className="text-sm text-gray-500 mb-6">
           Each QR code links to:{" "}
           <code className="bg-gray-200 px-1 rounded">{WEBSITE_URL}/?token=XX</code>
         </p>
-
-        {/* QR Grid */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {PRODUCTS_FOR_QR.map((p) => {
             const qrUrl = `${WEBSITE_URL}/?token=${encodeURIComponent(p.token)}`;
             return (
-              <div
-                key={p.token}
-                className="bg-white rounded-xl p-4 shadow flex flex-col items-center text-center"
-              >
-                <QRCodeCanvas
-                  value={qrUrl}
-                  size={130}
-                  bgColor="#ffffff"
-                  fgColor="#000000"
-                  level="H"
-                />
+              <div key={p.token} className="bg-white rounded-xl p-4 shadow flex flex-col items-center text-center">
+                <QRCodeCanvas value={qrUrl} size={130} bgColor="#ffffff" fgColor="#000000" level="H" />
                 <p className="mt-3 text-[11px] font-bold text-gray-800 leading-tight">{p.name}</p>
                 <p className="text-[10px] text-gray-500 mt-1">Serial: {p.serial}</p>
                 <p className="text-[10px] text-gray-500">Token: {p.token}</p>
@@ -1890,34 +1876,29 @@ function AdminQRPage() {
             );
           })}
         </div>
-
       </div>
     </div>
   );
 }
 
 /* =====================================================================
-   MAIN AUTH PAGE — all hooks safely at the top, no early returns
+   MAIN AUTH PAGE
 ===================================================================== */
 function AuthPage() {
-  /* ===================== COMMON STATES ===================== */
   const [status, setStatus] = useState("idle");
   const [productName, setProductName] = useState("");
   const [prevDetails, setPrevDetails] = useState(null);
   const hasVerifiedFromQR = useRef(false);
 
-  /* ===================== FORM STATES ===================== */
   const [serial, setSerial] = useState("");
   const [code, setCode] = useState("");
   const [mfgDate, setMfgDate] = useState("02/2022 or before");
   const isSerialAllowed = mfgDate !== "03/2022 or after";
 
-  /* ===================== DROPDOWN ===================== */
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef(null);
   const options = ["02/2022 or before", "03/2022 or after"];
 
-  // Click outside listener
   useEffect(() => {
     const handleClick = (e) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
@@ -1928,7 +1909,6 @@ function AuthPage() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  /* ===================== URL PARAMS ===================== */
   const queryData = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     const tokenParam = params.get("token");
@@ -1942,24 +1922,32 @@ function AuthPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    if (!response.ok) throw new Error("Server error");
     return await response.json();
   };
 
-  /* ===================== HANDLE RESULT ===================== */
-  const handleAuthResult = (data) => {
-    if (data.alreadyAuthenticated) {
+  /* =====================================================================
+     ✅ FIX: useCallback so the function is always fresh inside useEffect
+     Previously handleAuthResult was a stale closure inside the QR useEffect
+     causing alreadyAuthenticated to not be read correctly on second scan
+  ===================================================================== */
+  const handleAuthResult = useCallback((data) => {
+    // ✅ Check duplicate FIRST — most important for QR rescans
+    if (data.alreadyAuthenticated === true) {
       setProductName(data.product?.name || "");
       setPrevDetails({ fullDate: data.firstAuthDate });
       setStatus("duplicate");
       return;
     }
-    if (data.success) {
+    // ✅ Then check success
+    if (data.success === true) {
       setProductName(data.product?.name || "");
       setStatus("success");
       return;
     }
+    // ✅ Only fail if neither of the above
     setStatus("fail");
-  };
+  }, []);
 
   /* ===================== MANUAL VERIFY ===================== */
   const handleVerify = async (e) => {
@@ -1974,11 +1962,14 @@ function AuthPage() {
       handleAuthResult(data);
     } catch (err) {
       console.error("Auth error:", err);
-      setStatus("fail");
+      setStatus("network_error");
     }
   };
 
-  /* ===================== AUTO VERIFY FROM QR ===================== */
+  /* =====================================================================
+     ✅ FIX: handleAuthResult added to deps array — no more stale closure
+     This ensures QR rescan always reads the latest handleAuthResult
+  ===================================================================== */
   useEffect(() => {
     if (!queryData.token) return;
     if (hasVerifiedFromQR.current) return;
@@ -1988,14 +1979,15 @@ function AuthPage() {
       setStatus("loading");
       try {
         const data = await callAuthAPI({ token: queryData.token });
-        handleAuthResult(data);
-      } catch {
-        setStatus("fail");
+        handleAuthResult(data); // ✅ now always fresh via useCallback
+      } catch (err) {
+        console.error("QR verify error:", err);
+        setStatus("network_error");
       }
     };
 
     verify();
-  }, [queryData.token]);
+  }, [queryData.token, handleAuthResult]); // ✅ handleAuthResult in deps
 
   /* ===================== RESET ===================== */
   const resetQR = () => {
@@ -2017,7 +2009,6 @@ function AuthPage() {
 
   const isQRMode = !!queryData.token;
 
-  /* ===================== UI ===================== */
   return (
     <div className="min-h-screen md:-mt-2 w-full font-sans flex items-center justify-center px-4 py-6 md:p-0">
       <div className="w-full max-w-[280px] md:w-80 rounded-2xl md:max-w-md shadow-[0px_6px_12px_rgba(0,0,0,0.58)]">
@@ -2037,9 +2028,9 @@ function AuthPage() {
               <img src={Logo} alt="Alpha Pharma Logo" className="w-28 h-28 md:w-50 md:h-50 object-contain -mt-6 md:-mt-10" />
             </div>
 
-            {/* FORM AREA */}
             <div className="px-3 md:px-6 pb-4 md:pb-4 -mt-6 md:-mt-12">
 
+              {/* FORM */}
               {(status === "idle" || status === "loading") && (
                 <form
                   onSubmit={handleVerify}
@@ -2047,20 +2038,13 @@ function AuthPage() {
                 >
                   {/* MFG DATE */}
                   <div className="relative mb-2 md:mb-0" ref={dropdownRef}>
-                    <label className="block text-[9px] md:text-[13px] md:ml-10 font-semibold text-gray-800 mb-1">
-                      Mfg. Date:
-                    </label>
+                    <label className="block text-[9px] md:text-[13px] md:ml-10 font-semibold text-gray-800 mb-1">Mfg. Date:</label>
                     <div
                       onClick={() => setIsOpen(!isOpen)}
                       className="w-full md:w-35 md:ml-10 flex justify-between px-2 md:px-0 py-2 md:py-1 md:justify-center border border-gray-400 cursor-pointer items-center bg-white hover:border-gray-600 transition-colors rounded md:rounded-none"
                     >
-                      <span className="text-[10px] md:text-[12px] text-gray-800">
-                        {mfgDate || "02/2022 or before"}
-                      </span>
-                      <svg
-                        className={`w-3 h-3 md:w-4 md:h-4 text-gray-600 transition-transform duration-200 ${isOpen ? "rotate-180" : "rotate-0"}`}
-                        fill="none" stroke="currentColor" viewBox="0 0 24 24"
-                      >
+                      <span className="text-[10px] md:text-[12px] text-gray-800">{mfgDate || "02/2022 or before"}</span>
+                      <svg className={`w-3 h-3 md:w-4 md:h-4 text-gray-600 transition-transform duration-200 ${isOpen ? "rotate-180" : "rotate-0"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
                       </svg>
                     </div>
@@ -2069,11 +2053,7 @@ function AuthPage() {
                         {options.map((opt) => (
                           <div
                             key={opt}
-                            onClick={() => {
-                              setMfgDate(opt);
-                              if (opt === "03/2022 or after") setSerial("");
-                              setIsOpen(false);
-                            }}
+                            onClick={() => { setMfgDate(opt); if (opt === "03/2022 or after") setSerial(""); setIsOpen(false); }}
                             className="px-2 md:px-3 py-2 text-[10px] md:text-[14px] text-gray-800 hover:bg-gray-100 cursor-pointer transition-colors"
                           >
                             {opt}
@@ -2086,44 +2066,33 @@ function AuthPage() {
                   {/* SERIAL */}
                   {isSerialAllowed && (
                     <div className="mb-2 md:mb-0">
-                      <label className="block text-[9px] md:text-[13px] md:ml-10 font-semibold text-gray-800 mb-1">
-                        Serial Number:
-                      </label>
+                      <label className="block text-[9px] md:text-[13px] md:ml-10 font-semibold text-gray-800 mb-1">Serial Number:</label>
                       <input
-                        type="text"
-                        required
+                        type="text" required
                         className="w-full md:w-45 md:ml-10 px-2 py-2 md:py-1 border border-gray-400 bg-white focus:border-gray-600 focus:outline-none text-[10px] md:text-[14px] text-gray-800 transition-colors rounded md:rounded-none"
-                        value={serial}
-                        onChange={(e) => setSerial(e.target.value)}
+                        value={serial} onChange={(e) => setSerial(e.target.value)}
                       />
                     </div>
                   )}
 
                   {/* CODE */}
                   <div className="mb-2.5 md:mb-0">
-                    <label className="block text-[9px] md:text-[13px] md:ml-10 font-semibold text-gray-800 mb-1">
-                      Authentication Code:
-                    </label>
+                    <label className="block text-[9px] md:text-[13px] md:ml-10 font-semibold text-gray-800 mb-1">Authentication Code:</label>
                     <input
-                      type="text"
-                      required
-                      disabled={status === "loading"}
+                      type="text" required disabled={status === "loading"}
                       className="w-full md:w-45 md:ml-10 px-2 py-2 md:py-1 border border-gray-400 bg-white focus:border-gray-600 focus:outline-none text-[10px] md:text-[14px] text-gray-800 transition-colors disabled:bg-gray-100 rounded md:rounded-none"
-                      value={code}
-                      onChange={(e) => setCode(e.target.value)}
+                      value={code} onChange={(e) => setCode(e.target.value)}
                     />
                   </div>
 
                   {/* SUBMIT */}
                   <div className="flex justify-center mb-2 md:mb-0 md:mt-1">
-                    <button
-                      type="submit"
-                      disabled={status === "loading"}
+                    <button type="submit" disabled={status === "loading"}
                       className="w-full md:w-auto px-5 md:px-3 py-2 md:py-1 font-semibold bg-[#0087CC] hover:bg-[#0066AA] text-white text-[11px] md:text-[15px] rounded shadow-md transition-all active:scale-95 disabled:opacity-70 uppercase tracking-wide"
                     >
-                      {status === "loading" ? (
-                        <div className="w-5 h-5 border-3 border-white/30 border-t-white rounded-full animate-spin mx-auto"></div>
-                      ) : "SUBMIT"}
+                      {status === "loading"
+                        ? <div className="w-5 h-5 border-3 border-white/30 border-t-white rounded-full animate-spin mx-auto"></div>
+                        : "SUBMIT"}
                     </button>
                   </div>
 
@@ -2137,10 +2106,8 @@ function AuthPage() {
                   <div className="text-[8px] md:text-[11px] w-full md:w-63 px-0 md:px-4 text-gray-700 leading-tight">
                     <p><strong>Warning:</strong></p>
                     <p className="mt-0.5 text-justify">
-                      We strongly discourage anyone from purchasing our products as loose ampoules/trays or
-                      blisters/strips without cartons. All genuine Alpha-Pharma products are always supplied in a
-                      tamper proof carton with intact silver scratch field except for Oral Strips which has no
-                      authentication features.
+                      We strongly discourage anyone from purchasing our products as loose ampoules/trays or blisters/strips without cartons.
+                      All genuine Alpha-Pharma products are always supplied in a tamper proof carton with intact silver scratch field except for Oral Strips which has no authentication features.
                     </p>
                   </div>
 
@@ -2168,17 +2135,33 @@ function AuthPage() {
                   <p className="text-[10px] font-['Times_New_Roman'] md:text-base text-left text-gray-600 font-medium leading-snug">
                     Your <span className="text-emerald-600 font-bold">{productName}</span> has been successfully authenticated.
                   </p>
-                 
+                  <button onClick={isQRMode ? resetQR : resetForm} className="mt-4 px-4 py-2 text-[9px] md:text-sm bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 transition-all">
+                    Verify Another
+                  </button>
                 </div>
               )}
 
-              {/* DUPLICATE */}
+              {/* ✅ DUPLICATE — shows when QR is scanned again after first authentication */}
               {status === "duplicate" && (
                 <div className="text-center min-h-[300px] py-4 md:py-6 px-3 md:px-4 border animate-in fade-in bg-gray-200 rounded-xl duration-500">
-                  <p className="text-[10px] md:text-sm font-medium font-['Times_New_Roman'] text-red-500 text-left leading-snug">
-                    Your product was Successfully Authenticated on {prevDetails?.fullDate}.
+                  <div className="w-12 h-12 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <svg className="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5">
+                      <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
+                  <h2 className="text-[11px] md:text-base font-bold text-gray-800 mb-2">Already Authenticated</h2>
+                  <p className="text-[10px] md:text-sm font-medium font-['Times_New_Roman'] text-orange-600 text-left leading-snug">
+                    This product was already authenticated on:
                   </p>
-                 
+                  <div className="mt-2 p-2 bg-orange-50 border border-orange-200 rounded-lg text-[10px] md:text-sm font-bold text-orange-700">
+                    {prevDetails?.fullDate}
+                  </div>
+                  <p className="text-[9px] md:text-xs text-gray-500 mt-3 text-left leading-snug">
+                    If you did not authenticate this product before, it may be counterfeit. Do not use it and contact your supplier.
+                  </p>
+                  <button onClick={isQRMode ? resetQR : resetForm} className="mt-4 px-4 py-2 text-[9px] md:text-sm border-2 border-gray-300 text-gray-600 rounded-lg font-semibold hover:bg-gray-100 transition-all">
+                    Go Back
+                  </button>
                 </div>
               )}
 
@@ -2197,6 +2180,19 @@ function AuthPage() {
                 </div>
               )}
 
+              {/* ✅ NEW: NETWORK ERROR — separate from authentication fail */}
+              {status === "network_error" && (
+                <div className="text-center py-4 min-h-[300px] border md:py-6 px-1 md:px-4 animate-in fade-in rounded-xl bg-gray-200 duration-500">
+                  <h2 className="text-[11px] md:text-xl font-bold text-gray-700">Connection Error</h2>
+                  <p className="text-left text-gray-600 mt-2 px-0 md:px-1 text-[9px] md:text-[13px] leading-snug">
+                    Could not reach the server. Please check your internet connection and try again.
+                  </p>
+                  <button onClick={isQRMode ? resetQR : resetForm} className="mt-4 px-4 py-2 text-[9px] md:text-sm bg-gray-600 text-white rounded-lg font-bold hover:bg-gray-700 transition-all">
+                    Try Again
+                  </button>
+                </div>
+              )}
+
             </div>
           </div>
         </div>
@@ -2206,12 +2202,10 @@ function AuthPage() {
 }
 
 /* =====================================================================
-   ✅ ROOT COMPONENT — decides which page to show, NO hooks here
-   This is the fix: routing logic is outside both hook-using components
+   ROOT — decides which page to show, NO hooks here
 ===================================================================== */
 export default function App() {
   const isAdminMode =
     new URLSearchParams(window.location.search).get("admin") === "true";
-
   return isAdminMode ? <AdminQRPage /> : <AuthPage />;
 }
